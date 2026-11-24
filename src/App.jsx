@@ -35,7 +35,13 @@ const money = (value) =>
     maximumFractionDigits: 2,
   });
 
-const today = () => new Date().toISOString().slice(0, 10);
+const today = () => {
+  const date = new Date();
+  const offset = date.getTimezoneOffset();
+  return new Date(date.getTime() - offset * 60000)
+    .toISOString()
+    .slice(0, 10);
+};
 
 const currentMonth = () => today().slice(0, 7);
 
@@ -49,6 +55,37 @@ const COLORS = [
   "#8b9a35",
 ];
 
+const initialDebtForm = () => ({
+  person_name: "",
+  type: "lent",
+  amount: "",
+  paid_amount: "0",
+  note: "",
+  transaction_date: today(),
+});
+
+const initialTransactionForm = () => ({
+  type: "income",
+  category: "",
+  amount: "",
+  description: "",
+  transaction_date: today(),
+});
+
+function downloadFile(filename, content, type) {
+  const blob = new Blob([content], { type });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+
+  link.href = url;
+  link.download = filename;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+
+  URL.revokeObjectURL(url);
+}
+
 function App() {
   const [user, setUser] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -56,8 +93,12 @@ function App() {
   const [message, setMessage] = useState("");
 
   const [authMode, setAuthMode] = useState("login");
+  const [recoveryMode, setRecoveryMode] = useState(false);
+
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+  const [newPassword, setNewPassword] = useState("");
+  const [confirmPassword, setConfirmPassword] = useState("");
 
   const [transactions, setTransactions] = useState([]);
   const [categories, setCategories] = useState([]);
@@ -67,30 +108,16 @@ function App() {
   const [month, setMonth] = useState(currentMonth());
 
   const [editingId, setEditingId] = useState(null);
+  const [editingDebtId, setEditingDebtId] = useState(null);
 
-  const [form, setForm] = useState({
-    type: "income",
-    category: "",
-    amount: "",
-    description: "",
-    transaction_date: today(),
-  });
-
+  const [form, setForm] = useState(initialTransactionForm);
   const [categoryForm, setCategoryForm] = useState({
     name: "",
     type: "expense",
   });
+  const [debtForm, setDebtForm] = useState(initialDebtForm);
 
-  const [debtForm, setDebtForm] = useState({
-    person_name: "",
-    type: "lent",
-    amount: "",
-    paid_amount: "0",
-    note: "",
-    transaction_date: today(),
-  });
-
-  // Login session পরীক্ষা
+  // Login session এবং password recovery পরীক্ষা
   useEffect(() => {
     let mounted = true;
 
@@ -111,9 +138,14 @@ function App() {
 
     const {
       data: { subscription },
-    } = supabase.auth.onAuthStateChange((_event, session) => {
-      if (mounted) {
-        setUser(session?.user || null);
+    } = supabase.auth.onAuthStateChange((event, session) => {
+      if (!mounted) return;
+
+      setUser(session?.user || null);
+
+      if (event === "PASSWORD_RECOVERY") {
+        setRecoveryMode(true);
+        setMessage("নতুন পাসওয়ার্ড সেট করুন।");
       }
     });
 
@@ -125,14 +157,14 @@ function App() {
 
   // ব্যবহারকারী লগইন করলে তার হিসাব লোড
   useEffect(() => {
-    if (user) {
+    if (user && !recoveryMode) {
       loadAllData();
-    } else {
+    } else if (!user) {
       setTransactions([]);
       setCategories([]);
       setDebts([]);
     }
-  }, [user]);
+  }, [user, recoveryMode]);
 
   async function loadAllData() {
     if (!user) return;
@@ -169,7 +201,6 @@ function App() {
 
       let categoryData = categoryResult.data || [];
 
-      // প্রথমবার ব্যবহার করলে প্রাথমিক ক্যাটাগরি তৈরি
       if (categoryData.length === 0) {
         const defaults = defaultCategories.map((item) => ({
           ...item,
@@ -231,7 +262,7 @@ function App() {
           setMessage("অ্যাকাউন্ট তৈরি হয়েছে।");
         } else {
           setMessage(
-            "অ্যাকাউন্ট তৈরি হয়েছে। আপনার ইমেইলে পাঠানো Verification Link-এ ক্লিক করে অ্যাকাউন্ট চালু করুন।"
+            "অ্যাকাউন্ট তৈরি হয়েছে। ইমেইলে পাঠানো Verification Link-এ ক্লিক করুন।"
           );
         }
       } else {
@@ -251,14 +282,82 @@ function App() {
     }
   }
 
+  // Forgot Password: ইমেইলে Reset Link পাঠানো
+  async function sendPasswordReset(e) {
+    e.preventDefault();
+
+    if (!email.trim()) {
+      setMessage("প্রথমে আপনার অ্যাকাউন্টের ইমেইল লিখুন।");
+      return;
+    }
+
+    setSaving(true);
+    setMessage("");
+
+    try {
+      const { error } = await supabase.auth.resetPasswordForEmail(
+        email.trim(),
+        {
+          redirectTo: window.location.origin,
+        }
+      );
+
+      if (error) throw error;
+
+      setMessage(
+        "পাসওয়ার্ড পরিবর্তনের লিংক আপনার ইমেইলে পাঠানো হয়েছে। ইমেইল পরীক্ষা করুন।"
+      );
+    } catch (error) {
+      setMessage("Reset Link পাঠানো যায়নি: " + error.message);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  // নতুন পাসওয়ার্ড সংরক্ষণ
+  async function saveNewPassword(e) {
+    e.preventDefault();
+
+    if (newPassword.length < 6) {
+      setMessage("নতুন পাসওয়ার্ড কমপক্ষে ৬ অক্ষরের হতে হবে।");
+      return;
+    }
+
+    if (newPassword !== confirmPassword) {
+      setMessage("দুটি পাসওয়ার্ড মিলছে না।");
+      return;
+    }
+
+    setSaving(true);
+    setMessage("");
+
+    try {
+      const { error } = await supabase.auth.updateUser({
+        password: newPassword,
+      });
+
+      if (error) throw error;
+
+      setRecoveryMode(false);
+      setNewPassword("");
+      setConfirmPassword("");
+      setMessage("পাসওয়ার্ড সফলভাবে পরিবর্তন হয়েছে।");
+    } catch (error) {
+      setMessage("পাসওয়ার্ড পরিবর্তনে সমস্যা: " + error.message);
+    } finally {
+      setSaving(false);
+    }
+  }
+
   async function handleLogout() {
     const { error } = await supabase.auth.signOut();
 
     if (error) {
       setMessage("লগআউট সমস্যা: " + error.message);
     } else {
-      setMessage("আপনি লগআউট করেছেন।");
+      setRecoveryMode(false);
       setAuthMode("login");
+      setMessage("আপনি লগআউট করেছেন।");
     }
   }
 
@@ -272,7 +371,7 @@ function App() {
     }));
   }
 
-  // নতুন আয় বা ব্যয় যোগ এবং পুরোনো হিসাব Edit
+  // নতুন আয় বা ব্যয় যোগ এবং Edit
   async function saveTransaction(e) {
     e.preventDefault();
 
@@ -312,7 +411,10 @@ function App() {
 
       if (result.error) throw result.error;
 
-      setMessage(editingId ? "হিসাব পরিবর্তন হয়েছে।" : "হিসাব সংরক্ষণ হয়েছে।");
+      setMessage(
+        editingId ? "হিসাব পরিবর্তন হয়েছে।" : "হিসাব সংরক্ষণ হয়েছে।"
+      );
+
       resetTransactionForm();
       await loadAllData();
     } catch (error) {
@@ -324,14 +426,7 @@ function App() {
 
   function resetTransactionForm() {
     setEditingId(null);
-
-    setForm({
-      type: "income",
-      category: "",
-      amount: "",
-      description: "",
-      transaction_date: today(),
-    });
+    setForm(initialTransactionForm());
   }
 
   function editTransaction(item) {
@@ -409,11 +504,20 @@ function App() {
     }
   }
 
-  // ঋণ বা পাওনা যোগ
-  async function addDebt(e) {
+  // ঋণ ও পাওনার ফর্ম Reset
+  function resetDebtForm() {
+    setEditingDebtId(null);
+    setDebtForm(initialDebtForm());
+  }
+
+  // ঋণ ও পাওনা যোগ অথবা Edit
+  async function saveDebt(e) {
     e.preventDefault();
 
-    if (!debtForm.person_name.trim() || Number(debtForm.amount) <= 0) {
+    if (
+      !debtForm.person_name.trim() ||
+      Number(debtForm.amount) <= 0
+    ) {
       setMessage("ব্যক্তির নাম ও সঠিক টাকার পরিমাণ লিখুন।");
       return;
     }
@@ -426,36 +530,69 @@ function App() {
       return;
     }
 
-    const { error } = await supabase.from("debts").insert([
-      {
-        user_id: user.id,
-        person_name: debtForm.person_name.trim(),
-        type: debtForm.type,
-        amount: Number(debtForm.amount),
-        paid_amount: Number(debtForm.paid_amount || 0),
-        note: debtForm.note.trim(),
-        transaction_date: debtForm.transaction_date,
-      },
-    ]);
+    setSaving(true);
+    setMessage("");
 
-    if (error) {
-      setMessage("ঋণের হিসাব যোগ করতে সমস্যা: " + error.message);
-    } else {
-      setMessage("ঋণের হিসাব সংরক্ষণ হয়েছে।");
-      setDebtForm({
-        person_name: "",
-        type: "lent",
-        amount: "",
-        paid_amount: "0",
-        note: "",
-        transaction_date: today(),
-      });
+    const payload = {
+      user_id: user.id,
+      person_name: debtForm.person_name.trim(),
+      type: debtForm.type,
+      amount: Number(debtForm.amount),
+      paid_amount: Number(debtForm.paid_amount || 0),
+      note: debtForm.note.trim(),
+      transaction_date: debtForm.transaction_date,
+    };
+
+    try {
+      let result;
+
+      if (editingDebtId) {
+        result = await supabase
+          .from("debts")
+          .update(payload)
+          .eq("id", editingDebtId)
+          .eq("user_id", user.id);
+      } else {
+        result = await supabase
+          .from("debts")
+          .insert([payload]);
+      }
+
+      if (result.error) throw result.error;
+
+      setMessage(
+        editingDebtId
+          ? "ঋণের তথ্য পরিবর্তন হয়েছে।"
+          : "ঋণের হিসাব সংরক্ষণ হয়েছে।"
+      );
+
+      resetDebtForm();
       await loadAllData();
+    } catch (error) {
+      setMessage("ঋণের হিসাব সংরক্ষণে সমস্যা: " + error.message);
+    } finally {
+      setSaving(false);
     }
   }
 
+  function editDebt(item) {
+    setEditingDebtId(item.id);
+
+    setDebtForm({
+      person_name: item.person_name || "",
+      type: item.type,
+      amount: String(item.amount),
+      paid_amount: String(item.paid_amount || 0),
+      note: item.note || "",
+      transaction_date: item.transaction_date || today(),
+    });
+
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  }
+
   async function updateDebtPayment(item) {
-    const remaining = Number(item.amount) - Number(item.paid_amount || 0);
+    const remaining =
+      Number(item.amount) - Number(item.paid_amount || 0);
 
     const input = window.prompt(
       "আর কত টাকা পরিশোধ হয়েছে? বাকি টাকা: " + money(remaining),
@@ -506,6 +643,55 @@ function App() {
       setMessage("ঋণের হিসাব মুছে ফেলা হয়েছে।");
       await loadAllData();
     }
+  }
+
+  // JSON Backup
+  function downloadBackup() {
+    const backup = {
+      app: "Expose",
+      backup_date: new Date().toISOString(),
+      account_email: user.email,
+      transactions,
+      categories,
+      debts,
+    };
+
+    downloadFile(
+      `expose-backup-${today()}.json`,
+      JSON.stringify(backup, null, 2),
+      "application/json;charset=utf-8"
+    );
+
+    setMessage("আপনার JSON Backup ডাউনলোড শুরু হয়েছে।");
+  }
+
+  // CSV Export
+  function downloadCSV() {
+    const escapeCSV = (value) =>
+      `"${String(value ?? "").replace(/"/g, '""')}"`;
+
+    const rows = [
+      ["তারিখ", "ধরন", "ক্যাটাগরি", "টাকা", "বিবরণ"],
+      ...transactions.map((item) => [
+        item.transaction_date,
+        item.type === "income" ? "আয়" : "ব্যয়",
+        item.category,
+        item.amount,
+        item.description || "",
+      ]),
+    ];
+
+    const csv = "\uFEFF" + rows
+      .map((row) => row.map(escapeCSV).join(","))
+      .join("\r\n");
+
+    downloadFile(
+      `expose-transactions-${today()}.csv`,
+      csv,
+      "text/csv;charset=utf-8"
+    );
+
+    setMessage("CSV ফাইল ডাউনলোড শুরু হয়েছে।");
   }
 
   // নির্বাচিত মাসের হিসাব
@@ -670,16 +856,58 @@ function App() {
     `);
 
     reportWindow.document.close();
-    reportWindow.onload = () => {
-      reportWindow.print();
-    };
+    reportWindow.onload = () => reportWindow.print();
   }
 
+  // Loading
   if (loading) {
     return (
       <div className="loading">
         <h2>Expose লোড হচ্ছে...</h2>
         <p>একটু অপেক্ষা করুন।</p>
+      </div>
+    );
+  }
+
+  // Password recovery screen
+  if (recoveryMode) {
+    return (
+      <div className="auth-page">
+        <div className="auth-card">
+          <h1 className="brand">Expose</h1>
+          <h2>নতুন পাসওয়ার্ড সেট করুন</h2>
+          <p className="subtitle">
+            আপনার অ্যাকাউন্টের জন্য নতুন পাসওয়ার্ড লিখুন।
+          </p>
+
+          <form onSubmit={saveNewPassword}>
+            <label>নতুন পাসওয়ার্ড</label>
+            <input
+              type="password"
+              value={newPassword}
+              onChange={(e) => setNewPassword(e.target.value)}
+              placeholder="কমপক্ষে ৬ অক্ষর"
+              minLength={6}
+              required
+            />
+
+            <label>নতুন পাসওয়ার্ড আবার লিখুন</label>
+            <input
+              type="password"
+              value={confirmPassword}
+              onChange={(e) => setConfirmPassword(e.target.value)}
+              placeholder="পাসওয়ার্ড নিশ্চিত করুন"
+              minLength={6}
+              required
+            />
+
+            <button type="submit" disabled={saving}>
+              {saving ? "সংরক্ষণ হচ্ছে..." : "নতুন পাসওয়ার্ড সংরক্ষণ"}
+            </button>
+          </form>
+
+          {message && <p className="message">{message}</p>}
+        </div>
       </div>
     );
   }
@@ -690,10 +918,16 @@ function App() {
       <div className="auth-page">
         <div className="auth-card">
           <h1 className="brand">Expose</h1>
+
           <h2>
-            {authMode === "login" ? "আপনার অ্যাকাউন্টে প্রবেশ করুন" : "নতুন অ্যাকাউন্ট তৈরি করুন"}
+            {authMode === "login"
+              ? "আপনার অ্যাকাউন্টে প্রবেশ করুন"
+              : "নতুন অ্যাকাউন্ট তৈরি করুন"}
           </h2>
-          <p className="subtitle">আপনার সকল হিসাব থাকুক এক জায়গায়</p>
+
+          <p className="subtitle">
+            আপনার সকল হিসাব থাকুক এক জায়গায়
+          </p>
 
           <form onSubmit={handleAuth}>
             <label>ইমেইল ঠিকানা</label>
@@ -724,35 +958,82 @@ function App() {
             </button>
           </form>
 
-          <div className="switch-auth">
-            {authMode === "login" ? (
-              <>
-                নতুন ব্যবহারকারী?
-                <button
-                  className="text-button"
-                  onClick={() => {
-                    setAuthMode("signup");
-                    setMessage("");
-                  }}
-                >
-                  রেজিস্ট্রেশন করুন
-                </button>
-              </>
-            ) : (
-              <>
-                আগে থেকেই অ্যাকাউন্ট আছে?
-                <button
-                  className="text-button"
-                  onClick={() => {
-                    setAuthMode("login");
-                    setMessage("");
-                  }}
-                >
-                  লগইন করুন
-                </button>
-              </>
-            )}
-          </div>
+          {authMode === "login" && (
+            <button
+              className="text-button"
+              type="button"
+              onClick={() => {
+                setAuthMode("forgot");
+                setMessage("");
+              }}
+            >
+              পাসওয়ার্ড ভুলে গেছেন?
+            </button>
+          )}
+
+          {authMode === "forgot" && (
+            <form onSubmit={sendPasswordReset}>
+              <p>আপনার অ্যাকাউন্টের ইমেইল লিখুন।</p>
+
+              <label>ইমেইল ঠিকানা</label>
+              <input
+                type="email"
+                placeholder="আপনার ইমেইল লিখুন"
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+                required
+              />
+
+              <button type="submit" disabled={saving}>
+                {saving ? "পাঠানো হচ্ছে..." : "Reset Link পাঠান"}
+              </button>
+
+              <button
+                type="button"
+                className="text-button"
+                onClick={() => {
+                  setAuthMode("login");
+                  setMessage("");
+                }}
+              >
+                লগইনে ফিরে যান
+              </button>
+            </form>
+          )}
+
+          {authMode !== "forgot" && (
+            <div className="switch-auth">
+              {authMode === "login" ? (
+                <>
+                  নতুন ব্যবহারকারী?
+                  <button
+                    className="text-button"
+                    type="button"
+                    onClick={() => {
+                      setAuthMode("signup");
+                      setMessage("");
+                    }}
+                  >
+                    রেজিস্ট্রেশন করুন
+                  </button>
+                </>
+              ) : (
+                <>
+                  আগে থেকেই অ্যাকাউন্ট আছে?
+                  <button
+                    className="text-button"
+                    type="button"
+                    onClick={() => {
+                      setAuthMode("login");
+                      setMessage("");
+                    }}
+                  >
+                    লগইন করুন
+                  </button>
+                </>
+              )}
+            </div>
+          )}
 
           {message && <p className="message">{message}</p>}
         </div>
@@ -766,21 +1047,148 @@ function App() {
     ["debts", "ধার ও পাওনা"],
     ["categories", "ক্যাটাগরি"],
     ["report", "মাসিক রিপোর্ট"],
+    ["backup", "Backup"],
   ];
 
   return (
     <div className="page">
+      <style>{`
+        .page {
+          background: #f3f7f5;
+          min-height: 100vh;
+          padding: 18px 0;
+        }
+        .container {
+          max-width: 1200px;
+          margin: auto;
+          padding: 0 14px;
+        }
+        .page .card {
+          border: 1px solid #e4ece7;
+          border-radius: 16px;
+          box-shadow: 0 5px 20px rgba(20,60,40,.045);
+          margin-bottom: 16px;
+        }
+        .page .header {
+          display: flex;
+          align-items: center;
+          justify-content: space-between;
+          gap: 14px;
+          flex-wrap: wrap;
+        }
+        .page nav {
+          padding: 12px;
+        }
+        .page nav button {
+          border-radius: 10px;
+          padding: 10px 15px;
+        }
+        .page .summary-grid {
+          display: grid;
+          grid-template-columns: repeat(auto-fit,minmax(190px,1fr));
+          gap: 14px;
+          margin: 16px 0;
+        }
+        .page .summary-grid .card {
+          margin: 0;
+        }
+        .page .income-card {
+          border-left: 5px solid #159e70;
+        }
+        .page .expense-card {
+          border-left: 5px solid #dc5555;
+        }
+        .page .balance-card {
+          border-left: 5px solid #2877c7;
+        }
+        .page .income { color: #159e70; }
+        .page .expense { color: #dc5555; }
+        .page .section-header {
+          display: flex;
+          justify-content: space-between;
+          align-items: center;
+          gap: 12px;
+          flex-wrap: wrap;
+        }
+        .page input, .page select {
+          border-radius: 9px;
+          max-width: 100%;
+        }
+        .page button {
+          cursor: pointer;
+        }
+        .page .table-wrap {
+          width: 100%;
+          overflow-x: auto;
+        }
+        .page table {
+          width: 100%;
+          border-collapse: collapse;
+          min-width: 650px;
+        }
+        .page th, .page td {
+          padding: 11px 10px;
+          border-bottom: 1px solid #e7ece9;
+          text-align: left;
+        }
+        .page th {
+          background: #edf5f0;
+          color: #245b43;
+        }
+        .page .footer {
+          text-align: center;
+          padding: 20px 8px;
+          color: #718078;
+        }
+        .page .message {
+          padding: 12px;
+          border-radius: 10px;
+        }
+        .page .backup-actions {
+          display: grid;
+          grid-template-columns: repeat(auto-fit,minmax(220px,1fr));
+          gap: 14px;
+        }
+        .page .backup-item {
+          border: 1px solid #dfeae3;
+          background: #f8fbf9;
+          border-radius: 14px;
+          padding: 18px;
+        }
+        .page .backup-item button {
+          width: 100%;
+        }
+        @media(max-width:600px) {
+          .page { padding: 8px 0; }
+          .page .header { align-items: flex-start; }
+          .page nav { gap: 6px !important; }
+          .page nav button {
+            flex: 1 1 42%;
+            font-size: 13px;
+            padding: 9px 6px;
+          }
+          .page .section-header {
+            align-items: flex-start;
+          }
+        }
+      `}</style>
+
       <div className="container">
         <header className="header card">
           <div>
             <h1 className="brand">Expose</h1>
-            <p className="subtitle">আপনার ব্যক্তিগত হিসাব ব্যবস্থাপনা</p>
+            <p className="subtitle">
+              আপনার ব্যক্তিগত হিসাব ব্যবস্থাপনা
+            </p>
           </div>
 
           <div>
             <small>{user.email}</small>
             <br />
-            <button className="secondary-button" onClick={handleLogout}>
+            <button
+              className="secondary-button"
+              onClick={handleLogout}
+            >
               লগআউট
             </button>
           </div>
@@ -799,7 +1207,8 @@ function App() {
               key={key}
               onClick={() => setActiveTab(key)}
               style={{
-                background: activeTab === key ? "#176b50" : "#64748b",
+                background:
+                  activeTab === key ? "#176b50" : "#64748b",
               }}
             >
               {label}
@@ -858,9 +1267,15 @@ function App() {
                 <h3>অন্যের কাছে পাওনা</h3>
                 <h2 className="income">{money(lentTotal)} ৳</h2>
               </div>
+
               <div className="card">
                 <h3>অন্যের কাছে দেনা</h3>
                 <h2 className="expense">{money(borrowedTotal)} ৳</h2>
+              </div>
+
+              <div className="card">
+                <h3>মোট হিসাব</h3>
+                <h2>{transactions.length} টি</h2>
               </div>
             </div>
 
@@ -874,7 +1289,11 @@ function App() {
                     <YAxis />
                     <Tooltip />
                     <Legend />
-                    <Bar dataKey="amount" name="টাকা" fill="#176b50" />
+                    <Bar
+                      dataKey="amount"
+                      name="টাকা"
+                      fill="#176b50"
+                    />
                   </BarChart>
                 </ResponsiveContainer>
               </div>
@@ -882,8 +1301,11 @@ function App() {
 
             <div className="card">
               <h3>ব্যয়ের ক্যাটাগরি</h3>
+
               {expenseChartData.length === 0 ? (
-                <p className="empty">এই মাসে কোনো ব্যয়ের হিসাব নেই।</p>
+                <p className="empty">
+                  এই মাসে কোনো ব্যয়ের হিসাব নেই।
+                </p>
               ) : (
                 <div style={{ width: "100%", height: 280 }}>
                   <ResponsiveContainer>
@@ -915,9 +1337,16 @@ function App() {
         {/* Income and Expense */}
         {activeTab === "transactions" && (
           <div className="card">
-            <h2>{editingId ? "হিসাব পরিবর্তন করুন" : "নতুন আয় বা ব্যয় যোগ করুন"}</h2>
+            <h2>
+              {editingId
+                ? "হিসাব পরিবর্তন করুন"
+                : "নতুন আয় বা ব্যয় যোগ করুন"}
+            </h2>
 
-            <form className="transaction-form" onSubmit={saveTransaction}>
+            <form
+              className="transaction-form"
+              onSubmit={saveTransaction}
+            >
               <label>হিসাবের ধরন</label>
               <select
                 name="type"
@@ -981,7 +1410,11 @@ function App() {
               />
 
               <button type="submit" disabled={saving}>
-                {saving ? "সংরক্ষণ হচ্ছে..." : editingId ? "পরিবর্তন সংরক্ষণ" : "হিসাব যোগ করুন"}
+                {saving
+                  ? "সংরক্ষণ হচ্ছে..."
+                  : editingId
+                    ? "পরিবর্তন সংরক্ষণ"
+                    : "হিসাব যোগ করুন"}
               </button>
 
               {editingId && (
@@ -1013,7 +1446,9 @@ function App() {
                   {transactions.map((item) => (
                     <tr key={item.id}>
                       <td>{item.transaction_date}</td>
-                      <td>{item.type === "income" ? "আয়" : "ব্যয়"}</td>
+                      <td>
+                        {item.type === "income" ? "আয়" : "ব্যয়"}
+                      </td>
                       <td>{item.category}</td>
                       <td className={item.type}>
                         {money(item.amount)} ৳
@@ -1025,8 +1460,7 @@ function App() {
                           onClick={() => editTransaction(item)}
                         >
                           Edit
-                        </button>
-                        {" "}
+                        </button>{" "}
                         <button
                           type="button"
                           className="delete-button"
@@ -1056,7 +1490,7 @@ function App() {
           <div className="card">
             <h2>ধার ও পাওনার হিসাব</h2>
 
-            <form className="transaction-form" onSubmit={addDebt}>
+            <form className="transaction-form" onSubmit={saveDebt}>
               <label>ব্যক্তির নাম</label>
               <input
                 placeholder="ব্যক্তির নাম"
@@ -1080,8 +1514,12 @@ function App() {
                   })
                 }
               >
-                <option value="lent">আমি টাকা ধার দিয়েছি (পাওনা)</option>
-                <option value="borrowed">আমি টাকা ধার নিয়েছি (দেনা)</option>
+                <option value="lent">
+                  আমি টাকা ধার দিয়েছি (পাওনা)
+                </option>
+                <option value="borrowed">
+                  আমি টাকা ধার নিয়েছি (দেনা)
+                </option>
               </select>
 
               <label>মোট টাকা</label>
@@ -1139,8 +1577,26 @@ function App() {
                 }
               />
 
-              <button type="submit">ঋণের হিসাব যোগ করুন</button>
+              <button type="submit" disabled={saving}>
+                {saving
+                  ? "সংরক্ষণ হচ্ছে..."
+                  : editingDebtId
+                    ? "ঋণের তথ্য পরিবর্তন করুন"
+                    : "ঋণের হিসাব যোগ করুন"}
+              </button>
+
+              {editingDebtId && (
+                <button
+                  type="button"
+                  className="secondary-button"
+                  onClick={resetDebtForm}
+                >
+                  Edit বাতিল
+                </button>
+              )}
             </form>
+
+            <h3>ঋণ ও পাওনার তালিকা</h3>
 
             <div className="table-wrap">
               <table>
@@ -1157,7 +1613,8 @@ function App() {
                 <tbody>
                   {debts.map((item) => {
                     const remaining =
-                      Number(item.amount) - Number(item.paid_amount || 0);
+                      Number(item.amount) -
+                      Number(item.paid_amount || 0);
 
                     return (
                       <tr key={item.id}>
@@ -1176,8 +1633,13 @@ function App() {
                             >
                               পরিশোধ
                             </button>
-                          )}
-                          {" "}
+                          )}{" "}
+                          <button
+                            type="button"
+                            onClick={() => editDebt(item)}
+                          >
+                            Edit
+                          </button>{" "}
                           <button
                             type="button"
                             className="delete-button"
@@ -1208,7 +1670,10 @@ function App() {
           <div className="card">
             <h2>নিজস্ব ক্যাটাগরি তৈরি করুন</h2>
 
-            <form className="transaction-form" onSubmit={addCategory}>
+            <form
+              className="transaction-form"
+              onSubmit={addCategory}
+            >
               <label>ক্যাটাগরির নাম</label>
               <input
                 placeholder="যেমন: ইন্টারনেট বিল"
@@ -1254,7 +1719,9 @@ function App() {
                   {categories.map((item) => (
                     <tr key={item.id}>
                       <td>{item.name}</td>
-                      <td>{item.type === "income" ? "আয়" : "ব্যয়"}</td>
+                      <td>
+                        {item.type === "income" ? "আয়" : "ব্যয়"}
+                      </td>
                       <td>
                         <button
                           type="button"
@@ -1303,7 +1770,10 @@ function App() {
 
             <p>মোট হিসাব: {monthlyTransactions.length} টি</p>
 
-            <button type="button" onClick={downloadMonthlyReport}>
+            <button
+              type="button"
+              onClick={downloadMonthlyReport}
+            >
               PDF রিপোর্ট তৈরি করুন
             </button>
 
@@ -1322,7 +1792,9 @@ function App() {
                     <tr key={item.id}>
                       <td>{item.transaction_date}</td>
                       <td>{item.category}</td>
-                      <td>{item.type === "income" ? "আয়" : "ব্যয়"}</td>
+                      <td>
+                        {item.type === "income" ? "আয়" : "ব্যয়"}
+                      </td>
                       <td>{money(item.amount)} ৳</td>
                     </tr>
                   ))}
@@ -1340,8 +1812,67 @@ function App() {
           </div>
         )}
 
+        {/* Backup and Export */}
+        {activeTab === "backup" && (
+          <div className="card">
+            <h2>Backup ও ডেটা সংরক্ষণ</h2>
+
+            <p>
+              আপনার নিজের হিসাবের একটি কপি কম্পিউটার বা মোবাইলে
+              সংরক্ষণ করুন।
+            </p>
+
+            <div className="backup-actions">
+              <div className="backup-item">
+                <h3>সম্পূর্ণ JSON Backup</h3>
+                <p>
+                  আয়-ব্যয়, ক্যাটাগরি ও ধার-পাওনার সব তথ্য একটি
+                  JSON ফাইলে সংরক্ষণ হবে।
+                </p>
+                <button
+                  type="button"
+                  onClick={downloadBackup}
+                >
+                  JSON Backup ডাউনলোড
+                </button>
+              </div>
+
+              <div className="backup-item">
+                <h3>আয়-ব্যয়ের CSV</h3>
+                <p>
+                  আয়-ব্যয়ের তালিকা Excel-এ খোলার উপযোগী CSV
+                  ফাইলে সংরক্ষণ হবে।
+                </p>
+                <button
+                  type="button"
+                  onClick={downloadCSV}
+                >
+                  CSV ডাউনলোড
+                </button>
+              </div>
+            </div>
+
+            <div className="card">
+              <h3>আপনার ডেটার পরিমাণ</h3>
+              <p>আয়-ব্যয়ের হিসাব: {transactions.length} টি</p>
+              <p>ক্যাটাগরি: {categories.length} টি</p>
+              <p>ধার ও পাওনা: {debts.length} টি</p>
+              <p>
+                <strong>পরামর্শ:</strong> নিয়মিত Backup ডাউনলোড করে
+                নিরাপদ জায়গায় রাখুন।
+              </p>
+            </div>
+
+            <p className="subtitle">
+              এই সংস্করণে Backup ডাউনলোড করা যাবে। Backup থেকে
+              পুনরায় ডেটা Restore করার সুবিধা এখনো যোগ করা হয়নি।
+            </p>
+          </div>
+        )}
+
         <footer className="footer">
-          Expose © {new Date().getFullYear()} | আপনার হিসাব, আপনার নিয়ন্ত্রণ
+          Expose © {new Date().getFullYear()} |
+          আপনার হিসাব, আপনার নিয়ন্ত্রণ
         </footer>
       </div>
     </div>
