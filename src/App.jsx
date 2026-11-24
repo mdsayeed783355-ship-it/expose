@@ -1,6 +1,7 @@
 
 import { useState, useEffect } from "react";
 import { supabase } from "./supabase";
+import Accounts from "./Accounts";
 import "./index.css";
 
 import {
@@ -1166,6 +1167,7 @@ function App() {
   const tabs = [
     ["dashboard", "ড্যাশবোর্ড"],
     ["transactions", "আয়-ব্যয়"],
+    ["accounts", "ব্যাংক ও ওয়ালেট"],
     ["debts", "ধার ও পাওনা"],
     ["categories", "ক্যাটাগরি"],
     ["report", "মাসিক রিপোর্ট"],
@@ -1614,7 +1616,7 @@ function App() {
             </div>
           </div>
         )}
-
+{activeTab === "accounts" && <Accounts />}
         {/* Debts */}
         {activeTab === "debts" && (
           <div className="card">
