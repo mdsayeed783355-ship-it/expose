@@ -83,13 +83,14 @@ function downloadFile(filename, content, type) {
   link.click();
   link.remove();
 
-  URL.revokeObjectURL(url);
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
 function App() {
   const [user, setUser] = useState(null);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+  const [restoring, setRestoring] = useState(false);
   const [message, setMessage] = useState("");
 
   const [authMode, setAuthMode] = useState("login");
@@ -282,7 +283,7 @@ function App() {
     }
   }
 
-  // Forgot Password: ইমেইলে Reset Link পাঠানো
+  // Forgot Password
   async function sendPasswordReset(e) {
     e.preventDefault();
 
@@ -645,7 +646,7 @@ function App() {
     }
   }
 
-  // JSON Backup
+  // JSON Backup ডাউনলোড
   function downloadBackup() {
     const backup = {
       app: "Expose",
@@ -665,6 +666,123 @@ function App() {
     setMessage("আপনার JSON Backup ডাউনলোড শুরু হয়েছে।");
   }
 
+  // JSON Backup Restore
+  async function restoreBackup(e) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    try {
+      if (file.size > 20 * 1024 * 1024) {
+        throw new Error("ফাইলের আকার ২০ MB-এর বেশি।");
+      }
+
+      const text = await file.text();
+      const backup = JSON.parse(text);
+
+      if (
+        backup.app !== "Expose" ||
+        !Array.isArray(backup.transactions) ||
+        !Array.isArray(backup.categories) ||
+        !Array.isArray(backup.debts)
+      ) {
+        throw new Error("এটি সঠিক Expose Backup ফাইল নয়।");
+      }
+
+      const emailWarning =
+        backup.account_email &&
+        backup.account_email.toLowerCase() !== user.email.toLowerCase();
+
+      const warning = emailWarning
+        ? "সতর্কতা: এই Backup অন্য ইমেইলের। তবুও কি Restore করতে চান?"
+        : "Backup-এর তথ্য আপনার বর্তমান হিসাবের সঙ্গে যুক্ত হবে। চালিয়ে যাবেন?";
+
+      if (!window.confirm(warning)) return;
+
+      setRestoring(true);
+      setMessage("Backup Restore হচ্ছে। অপেক্ষা করুন...");
+
+      const prepareRows = (rows) =>
+        rows.map((item) => ({
+          ...item,
+          user_id: user.id,
+        }));
+
+      const categoryRows = prepareRows(backup.categories);
+      const transactionRows = prepareRows(backup.transactions);
+      const debtRows = prepareRows(backup.debts);
+
+      for (const item of categoryRows) {
+        if (
+          !item.name ||
+          !["income", "expense"].includes(item.type)
+        ) {
+          throw new Error("Backup-এ ভুল ক্যাটাগরির তথ্য পাওয়া গেছে।");
+        }
+      }
+
+      for (const item of transactionRows) {
+        if (
+          !["income", "expense"].includes(item.type) ||
+          !item.category ||
+          !Number.isFinite(Number(item.amount)) ||
+          Number(item.amount) <= 0 ||
+          !item.transaction_date
+        ) {
+          throw new Error("Backup-এ ভুল আয়-ব্যয়ের তথ্য পাওয়া গেছে।");
+        }
+      }
+
+      for (const item of debtRows) {
+        if (
+          !item.person_name ||
+          !["lent", "borrowed"].includes(item.type) ||
+          !Number.isFinite(Number(item.amount)) ||
+          Number(item.amount) <= 0 ||
+          !Number.isFinite(Number(item.paid_amount || 0)) ||
+          Number(item.paid_amount || 0) < 0 ||
+          Number(item.paid_amount || 0) > Number(item.amount)
+        ) {
+          throw new Error("Backup-এ ভুল ধার-পাওনার তথ্য পাওয়া গেছে।");
+        }
+      }
+
+      // প্রথমে ক্যাটাগরি Restore
+      if (categoryRows.length > 0) {
+        const { error } = await supabase
+          .from("categories")
+          .upsert(categoryRows);
+
+        if (error) throw error;
+      }
+
+      // এরপর আয়-ব্যয় Restore
+      if (transactionRows.length > 0) {
+        const { error } = await supabase
+          .from("transactions")
+          .upsert(transactionRows);
+
+        if (error) throw error;
+      }
+
+      // এরপর ধার-পাওনা Restore
+      if (debtRows.length > 0) {
+        const { error } = await supabase
+          .from("debts")
+          .upsert(debtRows);
+
+        if (error) throw error;
+      }
+
+      await loadAllData();
+      setMessage("সফলভাবে Backup Restore হয়েছে!");
+    } catch (error) {
+      setMessage("Restore করতে সমস্যা: " + error.message);
+    } finally {
+      setRestoring(false);
+      e.target.value = "";
+    }
+  }
+
   // CSV Export
   function downloadCSV() {
     const escapeCSV = (value) =>
@@ -681,9 +799,11 @@ function App() {
       ]),
     ];
 
-    const csv = "\uFEFF" + rows
-      .map((row) => row.map(escapeCSV).join(","))
-      .join("\r\n");
+    const csv =
+      "\uFEFF" +
+      rows
+        .map((row) => row.map(escapeCSV).join(","))
+        .join("\r\n");
 
     downloadFile(
       `expose-transactions-${today()}.csv`,
@@ -922,56 +1042,16 @@ function App() {
           <h2>
             {authMode === "login"
               ? "আপনার অ্যাকাউন্টে প্রবেশ করুন"
-              : "নতুন অ্যাকাউন্ট তৈরি করুন"}
+              : authMode === "signup"
+                ? "নতুন অ্যাকাউন্ট তৈরি করুন"
+                : "পাসওয়ার্ড রিসেট করুন"}
           </h2>
 
           <p className="subtitle">
             আপনার সকল হিসাব থাকুক এক জায়গায়
           </p>
 
-          <form onSubmit={handleAuth}>
-            <label>ইমেইল ঠিকানা</label>
-            <input
-              type="email"
-              placeholder="আপনার ইমেইল লিখুন"
-              value={email}
-              onChange={(e) => setEmail(e.target.value)}
-              required
-            />
-
-            <label>পাসওয়ার্ড</label>
-            <input
-              type="password"
-              placeholder="কমপক্ষে ৬ অক্ষর"
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              minLength={6}
-              required
-            />
-
-            <button type="submit" disabled={saving}>
-              {saving
-                ? "অপেক্ষা করুন..."
-                : authMode === "login"
-                  ? "লগইন"
-                  : "অ্যাকাউন্ট তৈরি করুন"}
-            </button>
-          </form>
-
-          {authMode === "login" && (
-            <button
-              className="text-button"
-              type="button"
-              onClick={() => {
-                setAuthMode("forgot");
-                setMessage("");
-              }}
-            >
-              পাসওয়ার্ড ভুলে গেছেন?
-            </button>
-          )}
-
-          {authMode === "forgot" && (
+          {authMode === "forgot" ? (
             <form onSubmit={sendPasswordReset}>
               <p>আপনার অ্যাকাউন্টের ইমেইল লিখুন।</p>
 
@@ -999,40 +1079,82 @@ function App() {
                 লগইনে ফিরে যান
               </button>
             </form>
-          )}
+          ) : (
+            <>
+              <form onSubmit={handleAuth}>
+                <label>ইমেইল ঠিকানা</label>
+                <input
+                  type="email"
+                  placeholder="আপনার ইমেইল লিখুন"
+                  value={email}
+                  onChange={(e) => setEmail(e.target.value)}
+                  required
+                />
 
-          {authMode !== "forgot" && (
-            <div className="switch-auth">
-              {authMode === "login" ? (
-                <>
-                  নতুন ব্যবহারকারী?
-                  <button
-                    className="text-button"
-                    type="button"
-                    onClick={() => {
-                      setAuthMode("signup");
-                      setMessage("");
-                    }}
-                  >
-                    রেজিস্ট্রেশন করুন
-                  </button>
-                </>
-              ) : (
-                <>
-                  আগে থেকেই অ্যাকাউন্ট আছে?
-                  <button
-                    className="text-button"
-                    type="button"
-                    onClick={() => {
-                      setAuthMode("login");
-                      setMessage("");
-                    }}
-                  >
-                    লগইন করুন
-                  </button>
-                </>
+                <label>পাসওয়ার্ড</label>
+                <input
+                  type="password"
+                  placeholder="কমপক্ষে ৬ অক্ষর"
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
+                  minLength={6}
+                  required
+                />
+
+                <button type="submit" disabled={saving}>
+                  {saving
+                    ? "অপেক্ষা করুন..."
+                    : authMode === "login"
+                      ? "লগইন"
+                      : "অ্যাকাউন্ট তৈরি করুন"}
+                </button>
+              </form>
+
+              {authMode === "login" && (
+                <button
+                  className="text-button"
+                  type="button"
+                  onClick={() => {
+                    setAuthMode("forgot");
+                    setMessage("");
+                  }}
+                >
+                  পাসওয়ার্ড ভুলে গেছেন?
+                </button>
               )}
-            </div>
+
+              <div className="switch-auth">
+                {authMode === "login" ? (
+                  <>
+                    নতুন ব্যবহারকারী?
+                    <button
+                      className="text-button"
+                      type="button"
+                      onClick={() => {
+                        setAuthMode("signup");
+                        setMessage("");
+                      }}
+                    >
+                      রেজিস্ট্রেশন করুন
+                    </button>
+                  </>
+                ) : (
+                  <>
+                    আগে থেকেই অ্যাকাউন্ট আছে?
+                    <button
+                      className="text-button"
+                      type="button"
+                      onClick={() => {
+                        setAuthMode("login");
+                        setMessage("");
+                      }}
+                    >
+                      লগইন করুন
+                    </button>
+                  </>
+                )}
+              </div>
+            </>
           )}
 
           {message && <p className="message">{message}</p>}
@@ -1117,6 +1239,10 @@ function App() {
         .page button {
           cursor: pointer;
         }
+        .page button:disabled {
+          opacity: .6;
+          cursor: not-allowed;
+        }
         .page .table-wrap {
           width: 100%;
           overflow-x: auto;
@@ -1157,6 +1283,10 @@ function App() {
         }
         .page .backup-item button {
           width: 100%;
+        }
+        .page .backup-item input[type="file"] {
+          width: 100%;
+          margin-top: 10px;
         }
         @media(max-width:600px) {
           .page { padding: 8px 0; }
@@ -1812,7 +1942,7 @@ function App() {
           </div>
         )}
 
-        {/* Backup and Export */}
+        {/* Backup and Restore */}
         {activeTab === "backup" && (
           <div className="card">
             <h2>Backup ও ডেটা সংরক্ষণ</h2>
@@ -1850,6 +1980,25 @@ function App() {
                   CSV ডাউনলোড
                 </button>
               </div>
+
+              <div className="backup-item">
+                <h3>JSON Backup Restore</h3>
+                <p>
+                  আগে ডাউনলোড করা Expose JSON Backup ফাইল নির্বাচন
+                  করে আপনার হিসাব পুনরুদ্ধার করুন।
+                </p>
+
+                <input
+                  type="file"
+                  accept=".json,application/json"
+                  onChange={restoreBackup}
+                  disabled={restoring}
+                />
+
+                {restoring && (
+                  <p>Restore হচ্ছে, অপেক্ষা করুন...</p>
+                )}
+              </div>
             </div>
 
             <div className="card">
@@ -1864,8 +2013,8 @@ function App() {
             </div>
 
             <p className="subtitle">
-              এই সংস্করণে Backup ডাউনলোড করা যাবে। Backup থেকে
-              পুনরায় ডেটা Restore করার সুবিধা এখনো যোগ করা হয়নি।
+              Restore করার আগে বর্তমান হিসাবের Backup রেখে দিন।
+              Restore করলে আগের হিসাব মুছে যাবে না।
             </p>
           </div>
         )}
