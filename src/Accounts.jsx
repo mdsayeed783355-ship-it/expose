@@ -107,104 +107,126 @@ export default function Accounts() {
     0
   );
 
-  async function addAccount(e) {
-    e.preventDefault();
-    setMessage("");
+  
+async function addAccount(e) {
+  e.preventDefault();
+  setMessage("");
 
-    if (!accountForm.account_name.trim()) {
-      setMessage("অ্যাকাউন্টের নাম লিখুন।");
-      return;
-    }
-
-    setSaving(true);
-
-    const { error } = await supabase.from("accounts").insert({
-      account_name: accountForm.account_name.trim(),
-      account_type: accountForm.account_type,
-      opening_balance: Number(accountForm.opening_balance || 0),
-      currency: "BDT",
-      is_active: true,
-    });
-
-    setSaving(false);
-
-    if (error) {
-      setMessage("অ্যাকাউন্ট তৈরি হয়নি: " + error.message);
-      return;
-    }
-
-    setAccountForm(initialAccount);
-    setMessage("নতুন অ্যাকাউন্ট তৈরি হয়েছে।");
-    await loadData();
+  if (!accountForm.account_name.trim()) {
+    setMessage("অ্যাকাউন্টের নাম লিখুন।");
+    return;
   }
 
-  async function addEntry(e) {
-    e.preventDefault();
-    setMessage("");
+  setSaving(true);
 
-    const amount = Number(entryForm.amount);
+  const { data: { user }, error: userError } =
+    await supabase.auth.getUser();
 
-    if (!amount || amount <= 0) {
-      setMessage("সঠিক টাকার পরিমাণ লিখুন।");
-      return;
-    }
-
-    if (entryForm.entry_type === "transfer") {
-      if (!entryForm.from_account_id || !entryForm.to_account_id) {
-        setMessage("টাকা পাঠানোর ও গ্রহণের অ্যাকাউন্ট নির্বাচন করুন।");
-        return;
-      }
-
-      if (entryForm.from_account_id === entryForm.to_account_id) {
-        setMessage("একই অ্যাকাউন্টে টাকা স্থানান্তর করা যাবে না।");
-        return;
-      }
-    } else if (!entryForm.account_id) {
-      setMessage("একটি অ্যাকাউন্ট নির্বাচন করুন।");
-      return;
-    }
-
-    const payload = {
-      entry_type: entryForm.entry_type,
-      account_id:
-        entryForm.entry_type === "transfer" ? null : entryForm.account_id,
-      from_account_id:
-        entryForm.entry_type === "transfer"
-          ? entryForm.from_account_id
-          : null,
-      to_account_id:
-        entryForm.entry_type === "transfer"
-          ? entryForm.to_account_id
-          : null,
-      amount,
-      category: entryForm.category.trim(),
-      description: entryForm.description.trim(),
-      transaction_date: entryForm.transaction_date,
-    };
-
-    setSaving(true);
-
-    const { error } = await supabase
-      .from("account_entries")
-      .insert(payload);
-
+  if (userError || !user) {
     setSaving(false);
+    setMessage("আপনাকে আবার লগইন করতে হবে।");
+    return;
+  }
 
-    if (error) {
-      setMessage("লেনদেন যোগ হয়নি: " + error.message);
+  const { error } = await supabase.from("accounts").insert({
+    user_id: user.id,
+    account_name: accountForm.account_name.trim(),
+    account_type: accountForm.account_type,
+    opening_balance: Number(accountForm.opening_balance || 0),
+    currency: "BDT",
+    is_active: true,
+  });
+
+  setSaving(false);
+
+  if (error) {
+    setMessage("অ্যাকাউন্ট তৈরি হয়নি: " + error.message);
+    return;
+  }
+
+  setAccountForm(initialAccount);
+  setMessage("নতুন অ্যাকাউন্ট তৈরি হয়েছে।");
+  await loadData();
+}
+
+
+  
+async function addEntry(e) {
+  e.preventDefault();
+  setMessage("");
+
+  const amount = Number(entryForm.amount);
+
+  if (!amount || amount <= 0) {
+    setMessage("সঠিক টাকার পরিমাণ লিখুন।");
+    return;
+  }
+
+  const { data: { user }, error: userError } =
+    await supabase.auth.getUser();
+
+  if (userError || !user) {
+    setMessage("আপনাকে আবার লগইন করতে হবে।");
+    return;
+  }
+
+  if (entryForm.entry_type === "transfer") {
+    if (!entryForm.from_account_id || !entryForm.to_account_id) {
+      setMessage("টাকা পাঠানোর ও গ্রহণের অ্যাকাউন্ট নির্বাচন করুন।");
       return;
     }
 
-    setEntryForm({
-      ...initialEntry,
-      account_id: accounts[0]?.id || "",
-      from_account_id: accounts[0]?.id || "",
-      to_account_id: accounts[1]?.id || "",
-    });
-
-    setMessage("লেনদেন সফলভাবে যোগ হয়েছে।");
-    await loadData();
+    if (entryForm.from_account_id === entryForm.to_account_id) {
+      setMessage("একই অ্যাকাউন্টে টাকা স্থানান্তর করা যাবে না।");
+      return;
+    }
+  } else if (!entryForm.account_id) {
+    setMessage("একটি অ্যাকাউন্ট নির্বাচন করুন।");
+    return;
   }
+
+  const payload = {
+    user_id: user.id,
+    entry_type: entryForm.entry_type,
+    account_id:
+      entryForm.entry_type === "transfer" ? null : entryForm.account_id,
+    from_account_id:
+      entryForm.entry_type === "transfer"
+        ? entryForm.from_account_id
+        : null,
+    to_account_id:
+      entryForm.entry_type === "transfer"
+        ? entryForm.to_account_id
+        : null,
+    amount,
+    category: entryForm.category.trim(),
+    description: entryForm.description.trim(),
+    transaction_date: entryForm.transaction_date,
+  };
+
+  setSaving(true);
+
+  const { error } = await supabase
+    .from("account_entries")
+    .insert(payload);
+
+  setSaving(false);
+
+  if (error) {
+    setMessage("লেনদেন যোগ হয়নি: " + error.message);
+    return;
+  }
+
+  setEntryForm({
+    ...initialEntry,
+    account_id: accounts[0]?.id || "",
+    from_account_id: accounts[0]?.id || "",
+    to_account_id: accounts[1]?.id || "",
+  });
+
+  setMessage("লেনদেন সফলভাবে যোগ হয়েছে।");
+  await loadData();
+}
 
   async function deleteEntry(id) {
     const confirmed = window.confirm("এই লেনদেনটি মুছে ফেলতে চান?");
